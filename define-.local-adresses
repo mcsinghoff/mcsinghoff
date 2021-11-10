@@ -1,0 +1,4 @@
+$dynamicDls = Get-DynamicDistributionGroup -ResultSize Unlimited
+$dynamicDls.Count
+$dynamicDls | ? { $_.EmailAddresses -clike "SMTP:*.local" } | measure
+$dynamicDls | ? { $_.EmailAddresses -clike "SMTP:*.local" } | select name,emailaddresses
