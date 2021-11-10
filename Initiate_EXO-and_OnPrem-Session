@@ -1,0 +1,30 @@
+##ANMELDUNG
+
+Set-ExecutionPolicy Unrestricted -Force
+import-module ExchangeOnlineManagement
+import-module exchangepowershell
+
+#Install-Module MSOnline
+import-module MsOnline
+#Install-Module AzureAD
+Import-Module AzureAD
+Add-PSSnapin Microsoft.Exchange.Management.PowerShell.SnapIn
+
+$Username = 
+
+#For the variable $ONPREMCREDS, Use your OnPrem Exchange Admin
+$ONPREMCREDS = Get-Credential -Message OnPremCred -UserName "$Username"
+#For the variable $O365CREDS, Use your Office 365 global administrator credentials
+#$O365CREDS = Get-Credential
+
+#Exchange OnPrem Session
+$ExOnPremSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri http://LOCAL.HOST.local/Powershell/ -Authentication Kerberos -Credential $ONPREMCREDS
+Import-PSSession $ExOnPremSession -DisableNameChecking -prefix onprem
+
+#$Remotehostname = msxews.lsw.de
+#$Targetdeliverydomain = ___________
+
+#Exchange Online Session
+#$EXOSESSION = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri https://ps.outlook.com/powershell -Credential $O365CREDS -Authentication basic -AllowRedirection
+Connect-ExchangeOnline -ShowBanne:$false
+
