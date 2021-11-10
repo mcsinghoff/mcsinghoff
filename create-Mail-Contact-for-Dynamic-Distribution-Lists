@@ -1,0 +1,73 @@
+
+Function Main {
+    ConnectExchange
+    [array]$dynamicDls = Get-DynamicDistributionGroup -ResultSize Unlimited
+    Get-PSSession |Remove-PSSession
+    Connect-ExchangeOnline
+    for ($i = 0; $i -lt $dynamicDls.Count; $i++)
+    { 
+        $dynamicDl = $dynamicDls[$i]
+        Write-Progress -Activity "DL $($dynamicDl.Name)" -Status "$($i+1)/$($dynamicDls.Count)" -PercentComplete (($i+1)/($dynamicDls.Count)*100) -Id 1
+        $primarySmtp = $dynamicDl.EmailAddresses | ? { $_ -clike "SMTP:*" }
+        $checkMailContact = $null
+        $checkMailContact = Get-MailContact -Identity $primarySmtp.Replace("SMTP:", "") -ErrorAction SilentlyContinue
+        if($checkMailContact -eq $null) {
+            $mailContact = New-MailContact -Name "$($dynamicDl.Name)-DDL" -ExternalEmailAddress $primarySmtp
+            Set-MailContact -Identity $mailContact.PrimarySmtpAddress -EmailAddresses @{Add="x500:$($dynamicDl.LegacyExchangeDN)"}
+        }
+    }
+    Write-Progress -Activity "DL" -Completed -Id 1
+}
+
+
+Function ConnectExchange {
+    ##########################################################
+    # Loading Exchange environment
+    ##########################################################
+    Write-Host "Loading Exchange Environment"
+
+    #Alt. not supportet https://blog.rmilne.ca/2015/01/28/directly-loading-exchange-2010-or-2013-snapin-is-not-supported/
+    #Add-PSSnapin Microsoft.Exchange.Management.PowerShell.E2010
+    $error.Clear()
+    if (get-pssession | where-object {$_.State -eq "Opened" -and $_.ConfigurationName -eq "Microsoft.Exchange"}) {
+        Write-Host "Using existing Exchange OnPremises Connection"
+        $ExOnPremsession = $null
+    }
+    else {
+        Write-Host "Start new Connection to Exchange OnPremises"
+        if ([string]::IsNullOrEmpty($exchangeuri)) {
+            Write-host "Retrieving Exchange URL from Active Directory"
+            $RootDSE = [adsi]"LDAP://rootDSE"
+            $exchangeuri = Get-ADObject `
+                                -LDAPFilter "(&(objectclass=msExchPowerShellVirtualDirectory)(msExchInternalHostName=*))" `
+                                -SearchBase $RootDSE.configurationNamingContext[0] `
+                                -properties msExchInternalHostName `
+                            | Select-Object -ExpandProperty msExchInternalHostName -First 1
+        }
+    
+        if ([string]::IsNullOrEmpty($exchangeuri)) {
+            Write-Host "No valid Exchange URI found. Check AD or parameters" -ForegroundColor red
+            exit
+        }
+        Write-Host " Connecting to Exchange OnPremises at $($exchangeuri)"
+        $ExOnPremSession = New-PSSession `
+            -ConfigurationName "Microsoft.Exchange" `
+            -ConnectionUri $exchangeuri 
+        Write-Host "Import Exchange Remote Session Commandlets"
+        import-pssession -Session $ExOnPremSession -AllowClobber | out-null
+        set-adserversettings -viewentireforest $true
+    }
+    if ($error) {
+	    Write-Host "Exitcode:8 Unable to load Exchange Snapins"
+	    exit 8
+    }
+    if (get-command "get-recipient" -ErrorAction SilentlyContinue) {
+        Write-Host " Commandlet get-recipient found OK"
+    }
+    else {
+        Write-Host " Unable to load exchange powershell module  Stop"
+        exit
+    }
+}
+
+Main
