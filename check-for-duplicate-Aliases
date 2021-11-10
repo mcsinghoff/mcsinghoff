@@ -1,0 +1,5 @@
+$allRecipients = Get-Recipient -ResultSize Unlimited
+$groups = $allRecipients | select -ExpandProperty alias | group
+#$groups | ? { $_.Count -gt 1 } | select -ExpandProperty name
+$groups | ? { $_.Count -gt 1 } | select -ExpandProperty name | Get-Recipient | select name, alias, recipientType, DistinguishedName
+
