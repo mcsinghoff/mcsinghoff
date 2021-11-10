@@ -1,0 +1,28 @@
+$allRecipients = Get-Recipient -ResultSize Unlimited
+$proxyAddresses = @{}
+foreach($recip in $allRecipients) {
+    foreach($email in $recip.EmailAddresses) {
+        if($email -like "x500*" -or $email -like "Smtp:*") {
+            if(!$proxyAddresses.ContainsKey($email)) {
+                $users = @()
+                $users += $recip
+                $proxyAddresses.Add($email,$users)
+            }
+            else {
+                Write-Host "Duplicate found: $email" -ForegroundColor Magenta
+                $proxyAddresses[$email] += $recip
+            }
+        }
+    }
+}
+$duplicateCount = 0
+$proxyAddresses.Keys | % {
+    if($proxyAddresses[$_].Count -gt 1) {
+        "PRoxyaddress: $_"
+        "Users:"
+        $proxyAddresses[$_] | select -ExpandProperty Name
+        $duplicateCount++
+    }
+}
+
+$duplicateCount
