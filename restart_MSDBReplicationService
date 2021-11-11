@@ -1,0 +1,5 @@
+$servicename = "MSExchangeMailboxReplication"
+$computer = "w2k16mbox1.stwwob.local"
+
+
+$ServiceObj = Get-Service -Name $ServiceName -ComputerName $Computer -ErrorAction Stop | Restart-Service -InputObj $ServiceObj -erroraction stop 
