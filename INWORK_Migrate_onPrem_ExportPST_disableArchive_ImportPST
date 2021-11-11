@@ -1,0 +1,68 @@
+#----------------------------------------------------------------------------------------------------------------------
+
+##Following cmdlet only available in Exchange OnPrem -->> Alternative muss gefunden werden
+#New-MailboxExportRequest -WhatIf -Mailbox sondervertrag@lsw.de -FilePath "\\qnap-6\export-pst\Z-Sondervertrag.pst" -IsArchive
+#--------------------------------------------------------------------------------
+
+Start-Transcript -Path C:\scripts\Logs\UnlicenceSharedMailboxes.txt -Append
+Write-host "Rückwärts Migration der Lizenzierten Shared Mailboxes"
+$Mailboxes = Import-CSV "C:\scripts\Remove Licences\SharebMBMarcelHeuer1.csv" # -Delimiter ";" 
+
+#TESTVerschiebung Archiv on Prem
+
+foreach ($line in $Mailboxes)  {
+    Remove-Moverequest -Identity $line.PrimarySmtpAddress 
+    }
+
+#EinzelUser
+    Remove-Moverequest -Identity  testkvout@lsw.de    
+
+
+
+
+foreach ($line in $Mailboxes)  {
+    Get-Mailbox -Identity $line.PrimarySmtpAddress | New-MoveRequest -OutBound -RemoteTargetDatabase  SystemMBOX1 `
+    -RemoteHostName msxews.lsw.de -TargetDeliveryDomain lswnetz.mail.onmicrosoft.com -RemoteCredential $ONPREMCREDS
+    }
+
+$runningRequests = (Get-MoveRequest -movestatus inprogress | Get-MoveRequestStatistics) -ne $null 
+
+while ($runningRequests) {
+    Start-Sleep -Seconds 600
+    $runningRequests = (Get-MoveRequest -movestatus inprogress | Get-MoveRequestStatistics) -ne $null    
+} 
+ 
+foreach ($line in $Mailboxes)  {
+    #Wenn Archiv onPrem, PST-File exportieren und gemäß Mailbox-Name ablegen
+    $filePath = ""   
+    $filePath =  ( -join ("\\qnap-6\export-pst\",  $line.Name , ".pst") ) 
+    New-MailboxExportRequest   -Mailbox $line.PrimarySmtpAddress  -FilePath $filePath -IsArchive 
+
+    #Nach Verschiebung schauen wie das Archiv in Exchange Online aussieht - ggf Die Archive Disablen lassen
+    #Archiv disablen, #Retention Policy entfernen
+} 
+
+
+foreach ($line in $Mailboxes)  {
+    Disable-onpremRemoteMailbox -Identity $line.PrimarySmtpAddress -Archive
+
+    #Set-Mailbox -Identity $line.PrimarySmtpAddress -RetentionPolicy $null -WhatIf
+
+    $filePath = ""   
+    $filePath =  ( -join ("\\qnap-6\export-pst\",  $line.Name , ".pst") ) 
+
+
+    New-MailboxImportRequest -WhatIf -Mailbox $line.PrimarySmtpAddress -FilePath $filePath
+
+}
+
+ 
+ foreach ($line in $Mailboxes) {Disable-Mailbox -whatif -Identity $line.PrimarySmtpAddress -Archive}
+
+foreach ($line in $Mailboxes) {Disable-Mailbox -Identity $line.PrimarySmtpAddress -Archive}
+
+#PST Import zu den Mailboxen / über das EAC oder per Skript
+#New-MailboxImportRequest -Mailbox <Name des Postfachs> -FilePath <UNC-Pfad und Name der PST-Datei>
+ foreach ($line in $TESTMailboxes)  { 
+    New-MailboxImportRequest -Mailbox $line.PrimarySmtpAddress -FilePath ( -join ("\\qnap-6\export-pst\",  $licensedMailboxesList.samaccountname , ".pst") ) 
+ }
