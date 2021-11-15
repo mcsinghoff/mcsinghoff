@@ -1,12 +1,12 @@
 # compare-GAL
 
 param (
-    $adminusername = "Muelleradm@lswnetz.onmicrosoft.com",
+    $adminusername = "_____@XYZ.onmicrosoft.com",
     $gallistcsv = "c:\scripts\gallist.csv", 
     $proxyaddresslistcsv = "c:\scripts\proxyaddresslist.csv", 
     $resultsize="unlimited",
     #[string]$exchangeuri  	= ""
-    [string]$exchangeuri  	= "http://w2k16mbox1.stwwob.local/Powershell"
+    [string]$exchangeuri  	= ""
 )
 
 Set-PSDebug -Strict
