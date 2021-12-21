@@ -1,0 +1,26 @@
+Import-Module ExchangeOnlineManagement
+
+Get-PSSession | Remove-PSSession
+Connect-ExchangeOnline
+
+$MAILBOXLIST = Import-CSV "C:\" -Delimiter ";"
+foreach ($line in $MAILBOXLIST) { 
+    if (-not (Get-Mailbox $line.Zieladresse -ErrorAction silentlycontinue)) { 
+        New-Mailbox `
+            -Shared `
+            -PrimarySmtpAddress $line.Zieladresse `
+            -Alias $line.Name.Replace(" ", "") `
+            -Name $line.Name `
+            -DisplayName $line.Name `
+            -FirstName $line.Vorname `
+            -LastName $line.Nachname
+    }
+
+    foreach ($line in $MAILBOXLIST) {
+        New-MailContact -Name $line.Kontakt -ExternalEmailAddress $line.Mailadresse
+    
+}
+foreach ($line in $MAILBOXLIST) {
+    Set-Mailbox $line.Zieladresse  -ForwardingAddress $line.Mailadresse -DeliverToMailboxAndForward $true  
+}
+
