@@ -1,0 +1,391 @@
+$DomainController = "W2K16PDCL1.stwwob.local"
+$DomainName = "stwwob.local"
+$ExportFilesFolder = "C:\scripts\ExportPermissions\Exports"
+
+function Main {
+    try {
+        $savedEAP = $Global:ErrorActionPreference
+        $Global:ErrorActionPreference = 'Stop'
+        $adCredentials = Get-Credential -UserName "stwwob\AnMueller" -Message "Ad Creds"
+        ConnectExchange
+        Write-Host "Loading mailboxes..."
+        [array]$allMailboxes = Get-Mailbox -ResultSize Unlimited
+        <#
+        Write-Host "Found $($allMailboxes.Count) mailboxes"
+        Write-Host "Loading SendOnBehalf permissions"
+        [array]$sendOnBehalfPermissions = GetSendOnBehalfPermissions -AllMailboxes $allmailboxes -AdCredentials $adCredentials -DomainController $DomainController
+        Write-Host "Found $($sendOnBehalfPermissions.Count) SendOnBehalf permissions"
+        ExportPermissionsToFile  -Permissions $sendOnBehalfPermissions -FolderPath $ExportFilesFolder -FileName "sendOnBehalf"
+        Write-Host "Loading FullAccess permissions"
+        [array]$allmailboxPermissions = GetMailboxPermissions -AllMailboxes $allmailboxes
+        Write-Host "Found $($allmailboxPermissions.Count) FullAccess permissions"
+        ExportPermissionsToFile  -Permissions $allmailboxPermissions -FolderPath $ExportFilesFolder -FileName "fullAccess"
+        #>
+        Write-Host "Loading SendAs permissions"
+       # [array]$allRecipientPermissions = GetSendAsPermissions -AllMailboxes $allMailboxes
+        [array]$allRecipientPermissions = GetSendAsPermissionsAd -AllMailboxes $allMailboxes -DomainController $DomainController -Credentials $adCredentials -DnsDomainName $DomainName
+        Write-Host "Found $($allRecipientPermissions.Count) SendAs permissions"
+        ExportPermissionsToFile  -Permissions $allRecipientPermissions -FolderPath $ExportFilesFolder -FileName "sendAs"
+       # Write-Host "Loading ResourceDelegates for $($allMailboxes.Count)  mailboxes"
+       # [array]$allResourceDelegates = GetRoomResourceDelegates -AllMailboxes $allMailboxes
+       # Write-Host "Found $($allResourceDelegates.Count) ResourceDelegates"
+       # ExportPermissionsToFile  -Permissions $allResourceDelegates -FolderPath $ExportFilesFolder -FileName "resourceDelegates"
+       # Write-Host "Loading CalendarPermissions for $($allMailboxes.Count) mailboxes"
+       # [array]$calendarPermissions = GetCalendarPermissions -AllMailboxes $allMailboxes
+       # Write-Host "Found $($calendarPermissions.Count) calendar permissions"
+       # ExportPermissionsToFile  -Permissions $calendarPermissions -FolderPath $ExportFilesFolder -FileName "calendarPermissions"
+    }
+    catch {
+        Write-Host "Error exporting permissions - $($_.Exception.Message)"
+    }
+    finally {
+        $Global:ErrorActionPreference = $savedEAP
+    }
+    Get-PSSession | ? { $_.ConfigurationName -eq "Microsoft.Exchange" -and $_.State -eq "Opened" } | Remove-PSSession
+}
+$ADDomainsHash = @{}
+function GetADDomain {
+    Param(
+        [Parameter(Mandatory=$true)][string]$DomainNetBIOSName,
+        [Parameter(Mandatory=$true)][string]$DomainController
+    )
+    if($ADDomainsHash.ContainsKey($DomainNetBIOSName)) {
+        return $ADDomainsHash[$DomainNetBIOSName]
+    }
+    else {
+        $domain = Get-ADDomain $DomainNetBIOSName -Server $DomainController
+        $ADDomainsHash.Add($DomainNetBIOSName, $domain)
+        return $domain
+    }
+}
+
+Function ConnectExchange {
+    ##########################################################
+    # Loading Exchange environment
+    ##########################################################
+    Write-Host "Loading Exchange Environment"
+
+    #Alt. not supportet https://blog.rmilne.ca/2015/01/28/directly-loading-exchange-2010-or-2013-snapin-is-not-supported/
+    #Add-PSSnapin Microsoft.Exchange.Management.PowerShell.E2010
+    $error.Clear()
+    if (get-pssession | where-object {$_.State -eq "Opened" -and $_.ComputerName -eq "w2k16mbox2.stwwob.local"}) {
+        Write-Host "Using existing Exchange OnPremises Connection"
+        $ExOnPremsession = $null
+    }
+    else {
+        Write-Host "Start new Connection to Exchange OnPremises"
+        if ([string]::IsNullOrEmpty($exchangeuri)) {
+            Write-host "Retrieving Exchange URL from Active Directory"
+            $RootDSE = [adsi]"LDAP://rootDSE"
+            $exchangeuri = Get-ADObject `
+                                -LDAPFilter "(&(objectclass=msExchPowerShellVirtualDirectory)(msExchInternalHostName=*))" `
+                                -SearchBase $RootDSE.configurationNamingContext[0] `
+                                -properties msExchInternalHostName `
+                            | Select-Object -ExpandProperty msExchInternalHostName -First 1
+        }
+    
+        if ([string]::IsNullOrEmpty($exchangeuri)) {
+            Write-Host "No valid Exchange URI found. Check AD or parameters" -ForegroundColor red
+            exit
+        }
+        Write-Host " Connecting to Exchange OnPremises at $($exchangeuri)"
+        $ExOnPremSession = New-PSSession `
+            -ConfigurationName "Microsoft.Exchange" `
+            -ConnectionUri $exchangeuri 
+        Write-Host "Import Exchange Remote Session Commandlets"
+        import-pssession -Session $ExOnPremSession -AllowClobber | out-null
+        set-adserversettings -viewentireforest $true
+    }
+    if ($error) {
+	    Write-Host "Exitcode:8 Unable to load Exchange Snapins"
+	    exit 8
+    }
+    if (get-command "get-recipient" -ErrorAction SilentlyContinue) {
+        Write-Host " Commandlet get-recipient found OK"
+    }
+    else {
+        Write-Host " Unable to load exchange powershell module  Stop"
+        exit
+    }
+}
+function ExportPermissionsToFile {
+    Param(
+        [Parameter(Mandatory=$true)][array]$Permissions,
+        [Parameter(Mandatory=$true)][string]$FolderPath,
+        [Parameter(Mandatory=$true)][string]$FileName
+    )
+    if($Permissions) {
+        $currDate = get-date -Format "yyyy-MM-dd HH-mm-ss"
+        $fileName = "$($FileName)_$currDate.csv"
+        Write-Host "Exporting permissions to $("$FolderPath\$FileName")"
+        if(!(Test-Path $FolderPath)) {
+            New-Item $FolderPath -ItemType Directory -Force
+        }
+        $Permissions | Export-Csv "$FolderPath\$FileName" -Encoding UTF8 -NoTypeInformation
+    }
+}
+function GetMailboxPermissions {
+    Param(
+        [Parameter(Mandatory=$true)][array]$AllMailboxes
+    )
+    [array]$allMbPermissions = @()
+    for($i = 0; $i -lt $AllMailboxes.Count; $i++) {
+        $currMailbox = $AllMailboxes[$i]
+        Write-Progress -Activity "Loading FullAccess for $($currMailbox.PrimarySmtpAddress)" -Status "$($i+1)/$($AllMailboxes.Count)" -PercentComplete (($i+1)/($AllMailboxes.Count)*100)
+        try {
+            [array]$mbMailboxPermissions = Get-MailboxPermission -identity $currMailbox.Alias -ResultSize unlimited -ErrorAction Stop | where { $_.isinherited -eq $false -and ( $_.user -notlike '*\SELBST') -and ( $_.user -notlike 'S-1-5*') -and ( $_.user -notlike 'NT-AUTORITÄT\SYSTEM')}
+            if($mbMailboxPermissions) {
+                foreach($mbPerm in $mbMailboxPermissions) {
+                    $mbPermObj = Get-ADObject -Filter "sAMAccountName -like '$($mbPerm.User.Split("\")[1])'" -server $mbPerm.User.Split("\")[0]
+                    [array]$allMbPermissions += New-Object –TypeName PSObject –Property `
+                        ([ordered]@{'Mailbox'=$currMailbox.UserPrincipalname;
+                        'MailboxGuid'=$currMailbox.Guid;
+                        'Identity'=$mbPerm.Identity;
+                        'User'=$mbPerm.User;
+                        'UserObjectClass'=$mbPermObj.ObjectClass;
+                        'UserDn'=$mbPermObj.DistinguishedName
+                        'AccessRights'=$mbPerm.AccessRights;
+                        'IsInherited'=$mbPerm.IsInherited;
+                        'InheritanceType'=$mbPerm.InheritanceType;
+                        'Deny'=$mbPerm.Deny;
+                        'IsValid'=$mbPerm.IsValid;
+                        'ObjectState'=$mbPerm.ObjectState;
+                        })
+                }
+            }
+        }
+        catch {
+            Write-Host "Error loading mailbox permission for $($currMailbox.PrimarySmtpAddress) - $($_.Exception.Message)" -ForegroundColor Red
+        }
+    }
+    Write-Progress -Activity "done" -Completed:$true
+    return $allMbPermissions
+}
+function GetCalendarPermissions {
+    Param(
+        [Parameter(Mandatory=$true)][array]$AllMailboxes
+    )
+    [array]$allMbPermissions = @()
+    for($i = 0; $i -lt $AllMailboxes.Count; $i++) {
+        $currMailbox = $AllMailboxes[$i]
+        Write-Progress -Activity "Loading CalendarPermissions for $($currMailbox.PrimarySmtpAddress)" -Status "$($i+1)/$($AllMailboxes.Count)" -PercentComplete (($i+1)/($AllMailboxes.Count)*100)
+        try {
+            #if per snap in on exchange server
+            #if($currMailbox.PrimarySmtpAddress -is [Microsoft.Exchange.Data.SmtpAddress]) {
+            #    $primarySmtp = $currMailbox.PrimarySmtpAddress.Address
+            #}
+            #else {
+                $primarySmtp = $currMailbox.PrimarySmtpAddress
+           # }
+            $calendarName = Get-MailboxFolderStatistics $currMailbox.Alias | Where-Object { $_.FolderType -eq "Calendar" } | Select-Object Name
+            [array]$mailboxCalPermissions = Get-MailboxFolderPermission "$($primarySmtp):\$($calendarName.Name)" | Where-Object { $_.AccessRights -ne {None}}
+            if($mailboxCalPermissions) {
+                foreach($mbPerm in $mailboxCalPermissions) {
+                    if($mbPerm.User.DisplayName -ne "Default") {
+                        [array]$allMbPermissions += New-Object –TypeName PSObject –Property `
+                            ([ordered]@{'Mailbox'=$currMailbox.UserPrincipalname;
+                            'MailboxGuid'=$currMailbox.Guid;
+                            'Identity'=$mbPerm.Identity;
+                            'FolderName'=$mbPerm.FolderName;
+                            'User'=$mbPerm.User.DisplayName;
+                            'AccessRights'=$mbPerm.AccessRights;
+                            'IsValid'=$mbPerm.IsValid;
+                            'ObjectState'=$mbPerm.ObjectState;
+                            })
+                    }
+                }
+            }
+        }
+        catch {
+            Write-Host "Error loading calendar permission for $($currMailbox.PrimarySmtpAddress) - $($_.Exception.Message)" -ForegroundColor Red
+        }
+    }
+    Write-Progress -Activity "done" -Completed:$true
+    return $allMbPermissions
+}
+function GetSendOnBehalfPermissions {
+    Param(
+        [Parameter(Mandatory=$true)][array]$AllMailboxes,
+        [Parameter(Mandatory=$true)][System.Management.Automation.PSCredential]$AdCredentials,
+        [Parameter(Mandatory=$true)][string]$DomainController
+    )
+    [array]$allSOBPermissions = @()
+    [array]$sendOnBehalfMbs = $AllMailboxes | where {$_.GrantSendOnBehalfTo -ne $null}
+    for($i = 0; $i -lt $sendOnBehalfMbs.Count; $i++) {
+        $currMailbox = $sendOnBehalfMbs[$i]
+        Write-Progress -Activity "Loading SendOnBehalf for $($currMailbox.PrimarySmtpAddress)" -Status "$($i+1)/$($sendOnBehalfMbs.Count)" -PercentComplete (($i+1)/($sendOnBehalfMbs.Count)*100)
+        try {
+            foreach ($sobPerm in $currMailbox.GrantSendOnBehalfTo) {
+                $userDn = ConvertFrom-CanonicalUser -CanonicalName $sobPerm -DomainController $DomainController -Credentials $AdCredentials
+                $userDomain = $sobPerm.Split("/")[0]
+                $user = Get-ADObject $userDn -Property Name,ObjectGuid,DistinguishedName -server $userDomain
+                [array]$allSOBPermissions += New-Object –TypeName PSObject –Property `
+                        ([ordered]@{'Mailbox'=$currMailbox.UserPrincipalname;
+                        'MailboxGuid'=$currMailbox.Guid;
+                        'Name'=$user.Name;
+                        'ObjectGuid'=$user.ObjectGUID;
+                        'ObjectClass'=$user.ObjectClass;
+                        'DistinguishedName'=$user.DistinguishedName;
+                        })
+            }
+        }
+        catch {
+            Write-Host "Error loading mailbox permission for $($currMailbox.PrimarySmtpAddress) - $($_.Exception.Message)" -ForegroundColor Red
+        }
+    }
+    Write-Progress -Activity "done" -Completed:$true
+    return $allSOBPermissions
+}
+$AllPsDrives = Get-PSDrive
+
+function GetSendAsPermissionsAd {
+    Param(
+        [Parameter(Mandatory=$true)][string]$DomainController,
+        [Parameter(Mandatory=$true)][array]$AllMailboxes,
+        [Parameter(Mandatory=$true)]$Credentials,
+        [Parameter(Mandatory=$true)][string]$DnsDomainName
+    )
+    try {
+        #$currDomain = GetADDomain -DomainNetBIOSName $DnsDomainName -DomainController $DomainController
+        #$domainNetBIOSName = $currDomain.NetBIOSName
+        $allAdPermissions = @()
+        [array]$allAdPermissions = @()
+        Set-Location AD:
+        for($i = 0; $i -lt $AllMailboxes.Count; $i++) {
+            $currMailbox = $AllMailboxes[$i]
+            Write-Progress -Activity "Loading SendAs permissions for $($currMailbox.PrimarySmtpAddress)" -Status "$($i+1)/$($AllMailboxes.Count)" -PercentComplete (($i+1)/($AllMailboxes.Count)*100)
+            $domain = $currMailbox.DistinguishedName -Split "," | ? {$_ -like "DC=*"}
+            $domain = $domain -join "." -replace ("DC=", "")
+            $driveName = $domain.Replace(".", "")
+            $psDrive = $AllPsDrives | ? { $_.Name -like  $driveName }
+            if(!$psDrive) {
+                $psDrive = New-PSDrive -Name $driveName  -PSProvider ActiveDirectory -Server ((Get-ADDomain $domain).PDCEmulator) -Scope Global -root "//RootDSE/"
+                $AllPsDrives += $psDrive
+            }
+            Set-Location "$($driveName):"
+            [array]$sendAsPermissions = Get-ACL $currMailbox.DistinguishedName | select -ExpandProperty Access | ?{($_.ActiveDirectoryRights -eq "ExtendedRight") -and ($_.objectType -eq "ab721a54-1e2f-11d0-9819-00aa0040529b") -and          
+                ($_.IsInherited -eq $false) -and $_.IdentityReference -ne "NT-AUTORITÄT\SELBST" }
+            if($sendAsPermissions) {
+                foreach($sendAsPerm in $sendAsPermissions) {
+                    $permSid = ""
+                    $permDomainSid = ""
+                    $permUserDomain = ""
+                    $permUserName = ""
+                    $permDn = ""
+                    $permObjClass = ""
+                    if($sendAsPerm.IdentityReference -is [System.Security.Principal.NTAccount]) {
+                        $permUserDomain = $sendAsPerm.IdentityReference.Value.Split("\")[0]
+                        $permUserName = $sendAsPerm.IdentityReference.Value.Split("\")[1]
+                        $mbPermObj = Get-ADObject -Filter "sAMAccountName -like '$permUserName'" -server $permUserDomain
+                        $permDn = $mbPermObj.DistinguishedName;
+                        $permObjClass = $mbPermObj.ObjectClass;
+                    }
+                    else {
+                        $permSid = $sendAsPerm.IdentityReference.Value.ToString();
+                        $permDomainSid = $sendAsPerm.IdentityReference.AccountDomainSid.ToString()
+                    }
+                    $permToSave = New-Object -TypeName PsObject -Property `
+                        ([ordered]@{ "Mailbox" = $currMailbox.PrimarySmtpAddress;
+                                        "MailboxUserDn" = $currMailbox.DistinguishedName;
+                                        "MailboxUserGuid" = $currMailbox.Guid;
+                                        "MailboxSamAccName" = $currMailbox.SamAccountName;
+                                        "MailboxType" = $currMailbox.RecipientTypeDetails;
+                                        'PermObjectClass'=$permObjClass;
+                                        'PermDn'=$permDn;
+                                        "PermSid"= $permSid;
+                                        "PermDomainSid" = $permDomainSid;
+                                        "PermUserDomain" = $permUserDomain;
+                                        "PermUserName" = $permUserName;
+                        })
+                    [array]$allAdPermissions += $permToSave
+                }
+            }
+        }
+        return $allAdPermissions
+    }    
+    catch {
+        throw "Could not load mailbox permissions from $DnsDomainName - $($_.Exception.Message)"
+    }
+}
+function GetSendAsPermissions {
+    Param(
+        [Parameter(Mandatory=$true)][array]$AllMailboxes
+    )
+    [array]$allAdPermissions = @()
+    for($i = 0; $i -lt $AllMailboxes.Count; $i++) {
+        $currMailbox = $AllMailboxes[$i]
+        Write-Progress -Activity "Loading SendAs for $($currMailbox.PrimarySmtpAddress)" -Status "$($i+1)/$($AllMailboxes.Count)" -PercentComplete (($i+1)/($AllMailboxes.Count)*100)
+        try {
+            [array]$sendAsPermissions = Get-ADPermission $currMailbox.DistinguishedName | where { ($_.ExtendedRights -like “*Send-As*”) -and ($_.IsInherited -eq $false) -and -not ($_.User -like “NT-AUTORITÄT\SELBST”) }
+            if($sendAsPermissions) {
+                foreach($mbPerm in $sendAsPermissions) {
+                    [array]$allAdPermissions += New-Object –TypeName PSObject –Property `
+                        ([ordered]@{'Mailbox'=$currMailbox.UserPrincipalname;
+                        'MailboxGuid'=$currMailbox.Guid;
+                        'Identity'=$mbPerm.Identity;
+                        'Trustee'=$mbPerm.Trustee;
+                        'AccessRights'=$mbPerm.AccessRights;
+                        'AccessControlType'=$mbPerm.AccessControlType;
+                        'IsInherited'=$mbPerm.IsInherited;
+                        'InheritanceType'=$mbPerm.InheritanceType;
+                        'IsValid'=$mbPerm.IsValid;
+                        'ObjectState'=$mbPerm.ObjectState;
+                        })
+                }
+            }
+        }
+        catch {
+            Write-Host "Error loading sendAs permission for $($currMailbox.PrimarySmtpAddress) - $($_.Exception.Message)" -ForegroundColor Red
+        }
+    }
+    return $allAdPermissions
+}
+function GetRoomResourceDelegates {
+    Param(
+        [Parameter(Mandatory=$true)][array]$AllMailboxes
+    )
+    [array]$allResourceDelegates = @()
+    for($i = 0; $i -lt $AllMailboxes.Count; $i++) {
+        $currMailbox = $AllMailboxes[$i]
+        Write-Progress -Activity "Loading ResourceDelegates for $($currMailbox.PrimarySmtpAddress)" -Status "$($i+1)/$($AllMailboxes.Count)" -PercentComplete (($i+1)/($AllMailboxes.Count)*100)
+        try {
+            $resourceDelegates = (Get-CalendarProcessing $currMailbox.Alias -ErrorAction Stop).ResourceDelegates
+            if($resourceDelegates) {
+                $resourceDelegates | %  {
+                    $allResourceDelegates += New-Object –TypeName PSObject –Property `
+                    ([ordered]@{'Mailbox'=$currMailbox.UserPrincipalname;
+                        'MailboxGuid'=$currMailbox.Guid;
+                        'DelegateObject'=$_;
+                    })
+                }
+            }
+        }
+        catch {
+            Write-Host "Error loading ResourceDelegates for $($currMailbox.PrimarySmtpAddress) - $($_.Exception.Message)" -ForegroundColor Red
+        }
+    }
+    return $allResourceDelegates
+}
+function ConvertFrom-CanonicalUser {
+    [cmdletbinding()]
+    param(
+    [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$CanonicalName,
+    [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$DomainController,
+    [Parameter(Mandatory)][object]$Credentials,
+    [bool]$CheckIfObjectExists = $false
+    )
+    process {
+        $obj = $CanonicalName.Replace('\,','<@>').Split('/')
+        [string]$DN = "CN=" + $obj[$obj.count - 1].Replace(",", "\,")
+        for ($i = $obj.count - 2;$i -ge 1;$i--){$DN += ",OU=" + $obj[$i]}
+        $obj[0].split(".") | ForEach-Object { $DN += ",DC=" + $_}
+        $DN = $DN.Replace('<@>','\,')
+        if($CheckIfObjectExists) {
+            return (CheckForContainers -DistinguishedName $DN -DomainController $DomainController -Credentials $Credentials)
+        }
+        else {
+            return $DN
+        }
+    }
+}
+Main
