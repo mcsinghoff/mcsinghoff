@@ -1,0 +1,57 @@
+$ONPREMCREDS = Get-Credential -Message OnPremCred -UserName "ST"
+#For the variable $O365CREDS, Use your Office 365 global administrator credentials
+#$O365CREDS = Get-Credential
+
+#Exchange OnPrem Session
+$ExOnPremSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri http://w2k16mbox1.stwwob.local/Powershell/ -Authentication Kerberos -Credential $ONPREMCREDS
+Import-PSSession $ExOnPremSession -DisableNameChecking -prefix onprem
+
+#$Remotehostname = msxews.lsw.de
+#$Targetdeliverydomain = ls.mail.onmicrosoft.com
+
+#Exchange Online Session
+#$EXOSESSION = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri https://ps.outlook.com/powershell -Credential $O365CREDS -Authentication basic -AllowRedirection
+Connect-ExchangeOnline -ShowBanne:$false
+
+#Sollte noch ein Moverequest bestehen, muss dieser zuerst entfernt werden
+#SINGELE USER
+Start-Transcript -Path C:
+Write-host "Rückwärtsmigration von Batch4 for Unlicence Shared Mailboxes"
+$MAILBOXLIST = Import-CSV "C:\scripts\v"
+
+foreach ($line in $MAILBOXLIST) { Remove-MoveRequest -Identity $line.PrimarySmtpAddress }
+
+###### Bei der Remote TargetDatabase muss der Speicherplatz onPrem eingegeben werden
+Get-Mailbox -Identity "noc@wobcom.de" | New-MoveRequest -OutBound -RemoteTargetDatabase  OnPrem -RemoteHostName msxews.lsw.de -TargetDeliveryDomain lswnetz.mail.onmicrosoft.com -RemoteCredential $ONPREMCREDS
+
+# ARCHIV Verschieben
+New-MoveRequest -WhatIf -identity abc@xyz.de -remotehostname lswnetz.mail.onmicrosoft.com -archiveonly -archivedomain msxews.xyz.de -Outbound -remotearchivetargetdatabase DN-2016 -remotecredential $ONPREMCREDS
+
+
+#MULTIPLE USER
+Start-Transcript -Path C:\scripts\RemoveLicences\SharedMBBatch4\LizenzEntziehen.csv
+Write-host "Rückwärtsmigration von Batch4 for Unlicence Shared Mailboxes"
+$MAILBOXLIST = Import-CSV "\\qnap-6\export-pst\PSTImportFehler\PSTImportFehler.csv"
+
+foreach ($line in $MAILBOXLIST) {Remove-MoveRequest -whatif -Identity $line.PrimarySmtpAddress }
+
+foreach ($line in $MAILBOXLIST) {Remove-MoveRequest -Identity $line.PrimarySmtpAddress -Confirm:$false}
+#########
+foreach ($line in $MAILBOXLIST) {
+    Get-Mailbox -Identity $line.PrimarySmtpAddress | New-MoveRequest -OutBound -RemoteTargetDatabase  OnPrem `
+    -RemoteHostName msxews.lsw.de -TargetDeliveryDomain lswnetz.mail.onmicrosoft.com -RemoteCredential $ONPREMCREDS #-SuspendWhenReadyToComplete
+    }
+
+Stop-Transcript
+
+
+foreach ($line in $MAILBOXLIST) {
+    Get-Mailbox -Identity $line.PrimarySmtpAddress | Suspend-MoveRequest 
+    }
+
+foreach ($line in $MAILBOXLIST) {
+    Get-Mailbox -Identity $line.PrimarySmtpAddress | Resume-MoveRequest
+    }
+
+
+Get-MoveRequest  | Get-MoveRequestStatistics | Select *TimeStamp, DisplayName, StatusDetail, TotalMailboxSize, TotalArchiveSize, PercentComplete 
